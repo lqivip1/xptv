@@ -1,1 +1,10 @@
-{}
+{
+  "sites": [
+    {
+      "name": "Chaturbate 直播",
+      "type": 3,
+      "api": "csp_chaturbate",
+      "ext": "https://cdn.jsdelivr.net/gh/lqivip1/xptv/chaturbate.js"
+    }
+  ]
+}
