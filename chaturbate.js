@@ -3,80 +3,79 @@ const appConfig = {
     site: "https://zh.chaturbate.com"
 };
 
-// XPTV 内置原生方法初始化 [cite: 33, 34]
-const cheerio = createCheerio(); [cite: 33]
-const CryptoJS = createCryptoJS(); [cite: 34]
+const cheerio = createCheerio();
+const CryptoJS = createCryptoJS();
 
 function jsonify(s) { return JSON.stringify(s); }
-function argsify(s) { return JSON.parse(s); } [cite: 32]
+function argsify(s) { return JSON.parse(s); }
 
 /**
- * 获取基础配置和分类标签 [cite: 88]
+ * 获取基础配置
+ * 直接使用官方的隐藏分类 API
  */
-async function getConfig() { [cite: 88]
+async function getConfig() {
     const config = {
         tabs: [
-            { name: "热门直播", ext: { url: `${appConfig.site}/` } },
-            { name: "女性主播", ext: { url: `${appConfig.site}/female-cams/` } },
-            { name: "男性主播", ext: { url: `${appConfig.site}/male-cams/` } },
-            { name: "情侣直播", ext: { url: `${appConfig.site}/couple-cams/` } },
-            { name: "跨性别", ext: { url: `${appConfig.site}/trans-cams/` } }
+            { name: "热门直播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&wm=97bL6` } },
+            { name: "女性主播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=f&wm=97bL6` } },
+            { name: "男性主播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=m&wm=97bL6` } },
+            { name: "情侣直播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=c&wm=97bL6` } },
+            { name: "跨性别", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=t&wm=97bL6` } }
         ]
     };
     return jsonify(config);
 }
 
 /**
- * 获取直播间卡片列表 [cite: 88]
+ * 通过 API 直接获取视频卡片（规避了 HTML 结构改变的风险）
  */
-async function getCards(ext) { [cite: 88]
+async function getCards(ext) {
     ext = argsify(ext);
-    const url = ext.url;
+    const url = ext.api;
     const cards = [];
     
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36', [cite: 36]
-        'Accept-Language': 'zh-CN,zh;q=0.9'
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
     };
 
     try {
-        const { data } = await $fetch.get(url, { headers }); [cite: 42]
-        const $ = cheerio.load(data); [cite: 98]
+        const { data } = await $fetch.get(url, { headers });
+        // XPTV 环境下统一使用内置防错解析数据
+        const resObj = argsify(data); 
+        const rooms = resObj.results || resObj;
 
-        $('ul.list li.room_list_room').each((_, element) => {
-            const href = $(element).find('a').attr('href'); [cite: 100]
-            const title = $(element).find('.title a').text().trim() || href.replace(/\//g, ''); [cite: 101]
-            const cover = $(element).find('img.clickable_image').attr('src') || $(element).find('img').attr('src'); [cite: 102]
-            const viewers = $(element).find('.num_users').text().trim();
-
-            if (href) {
-                cards.push({
-                    vod_id: href.toString(),  // vod_id 必须为字符串类型 [cite: 191, 297]
-                    vod_name: title, [cite: 106]
-                    vod_pic: cover, [cite: 107]
-                    vod_remarks: viewers ? `在线: ${viewers}` : "直播中", [cite: 108]
-                    ext: {
-                        url: `${appConfig.site}${href}`, [cite: 110]
-                        name: title
-                    }
-                });
-            }
-        });
+        if (Array.isArray(rooms)) {
+            rooms.forEach((room) => {
+                if (room.username) {
+                    cards.push({
+                        vod_id: room.username.toString(), // 确保是字符串
+                        vod_name: room.username,
+                        vod_pic: room.image_url || room.snapshot_url,
+                        vod_remarks: `在线: ${room.num_users || 0}人`,
+                        ext: {
+                            url: `${appConfig.site}/${room.username}/`,
+                            name: room.username
+                        }
+                    });
+                }
+            });
+        }
     } catch (e) {
-        $utils.toastError('列表加载失败: ' + e.message); [cite: 51]
+        $utils.toastError('接口数据抓取失败: ' + e.message);
     }
 
     return jsonify({ list: cards });
 }
 
 /**
- * 获取播放集数（单个直播间固定为一个播放轨道） [cite: 88]
+ * 获取播放轨道
  */
-async function getTracks(ext) { [cite: 88]
+async function getTracks(ext) {
     ext = argsify(ext);
     const tracks = [
         {
-            name: "进入直播间 (" + ext.name + ")",
+            name: "在线播放直播间 (" + ext.name + ")",
             ext: { url: ext.url }
         }
     ];
@@ -84,56 +83,52 @@ async function getTracks(ext) { [cite: 88]
 }
 
 /**
- * 解析并提取直播流链接 [cite: 88]
+ * 提取 HLS/m3u8 播放地址
  */
-async function getPlayinfo(ext) { [cite: 88]
+async function getPlayinfo(ext) {
     ext = argsify(ext);
     const url = ext.url;
     let playUrl = "";
     
-    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'; [cite: 327]
+    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
     const headers = { 'User-Agent': UA };
 
     try {
-        // 尝试从网页源代码中提取原生内嵌的 m3u8 地址
-        const { data } = await $fetch.get(url, { headers }); [cite: 42]
+        // 直接请求网页源码，提取动态生成的原始 m3u8
+        const { data } = await $fetch.get(url, { headers });
         const match = data.match(/https:\\\/\\\/[^"]+?\.m3u8/);
         if (match) {
             playUrl = match[0].replace(/\\/g, ''); 
         }
     } catch (e) {
-        $print("常规页面流媒体提取失败"); [cite: 40]
+        $print("常规解析失败");
     }
 
-    // 如果原生提取失败，且你在订阅中配置了自定义的 docker 嗅探服务器，则走嗅探分支 [cite: 307]
+    // 嗅探器作为兜底分支
     let $config = {};
-    try { $config = argsify($config_str); } catch(e){} [cite: 32]
+    try { $config = argsify($config_str); } catch(e){}
 
-    if (!playUrl && $config.sniffer) { [cite: 307]
+    if (!playUrl && $config.sniffer) {
         try {
-            const sniffRes = await $fetch.post(`${$config.sniffer}/getplayurl`, jsonify({ [cite: 333]
-                "url": url, [cite: 334]
-                "ua": [UA], [cite: 335]
-                "first": 1, [cite: 321]
-                "speed": 1 [cite: 324]
+            const sniffRes = await $fetch.post(`${$config.sniffer}/getplayurl`, jsonify({
+                "url": url,
+                "ua": [UA],
+                "first": 1,
+                "speed": 1
             }), {
-                'User-Agent': UA, [cite: 338]
-                'Content-Type': 'application/json' [cite: 339]
+                'User-Agent': UA,
+                'Content-Type': 'application/json'
             });
-            
-            const resData = argsify(sniffRes.data); [cite: 32]
-            if (resData && resData.result && resData.result.first) { [cite: 341]
+            const resData = argsify(sniffRes.data);
+            if (resData && resData.result && resData.result.first) {
                 return jsonify({
-                    urls: [resData.result.first.url], [cite: 341]
-                    headers: [resData.result.first.headers || { "User-Agent": UA }] [cite: 341]
+                    urls: [resData.result.first.url],
+                    headers: [resData.result.first.headers || { "User-Agent": UA }]
                 });
             }
-        } catch (err) {
-            $utils.toastError('核心嗅探调度失败'); [cite: 51]
-        }
+        } catch (err) {}
     }
 
-    // 返回流媒体结果或兜底客户端
     if (playUrl) {
         return jsonify({ urls: [playUrl], headers: [headers] });
     } else {
@@ -142,11 +137,11 @@ async function getPlayinfo(ext) { [cite: 88]
 }
 
 /**
- * 搜索页逻辑 [cite: 88]
+ * 搜索逻辑
  */
-async function search(ext) { [cite: 88]
+async function search(ext) {
     ext = argsify(ext);
     const keyword = ext.keyword;
-    const searchUrl = `${appConfig.site}/tags/${encodeURIComponent(keyword)}/`;
+    const searchUrl = `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&username=${encodeURIComponent(keyword)}&wm=97bL6`;
     return await getCards(jsonify({ url: searchUrl }));
 }
