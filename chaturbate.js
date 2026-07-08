@@ -9,139 +9,128 @@ const CryptoJS = createCryptoJS();
 function jsonify(s) { return JSON.stringify(s); }
 function argsify(s) { return JSON.parse(s); }
 
-/**
- * 获取基础配置
- * 直接使用官方的隐藏分类 API
- */
 async function getConfig() {
     const config = {
         tabs: [
-            { name: "热门直播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&wm=97bL6` } },
-            { name: "女性主播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=f&wm=97bL6` } },
-            { name: "男性主播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=m&wm=97bL6` } },
-            { name: "情侣直播", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=c&wm=97bL6` } },
-            { name: "跨性别", ext: { api: `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&gender=t&wm=97bL6` } }
+            { name: "热门直播", ext: { url: `${appConfig.site}/` } },
+            { name: "女性主播", ext: { url: `${appConfig.site}/female-cams/` } },
+            { name: "男性主播", ext: { url: `${appConfig.site}/male-cams/` } },
+            { name: "情侣直播", ext: { url: `${appConfig.site}/couple-cams/` } },
+            { name: "跨性别", ext: { url: `${appConfig.site}/trans-cams/` } }
         ]
     };
     return jsonify(config);
 }
 
-/**
- * 通过 API 直接获取视频卡片（规避了 HTML 结构改变的风险）
- */
 async function getCards(ext) {
     ext = argsify(ext);
-    const url = ext.api;
+    const url = ext.url;
     const cards = [];
     
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Referer': appConfig.site
     };
 
     try {
         const { data } = await $fetch.get(url, { headers });
-        // XPTV 环境下统一使用内置防错解析数据
-        const resObj = argsify(data); 
-        const rooms = resObj.results || resObj;
+        
+        // 尝试解析 HTML (防止 API 彻底被封封锁)
+        const $ = cheerio.load(data);
+        
+        // 针对 Chaturbate 动态/静态混合结构的多种选择器兼容兼容
+        const listItems = $('ul.list li.room_list_room, div.room_list_room, li.cams-list-item');
+        
+        if (listItems.length > 0) {
+            listItems.each((_, element) => {
+                const href = $(element).find('a').attr('href');
+                let title = $(element).find('.title a, .username').text().trim();
+                let cover = $(element).find('img.clickable_image, img').attr('src');
+                const viewers = $(element).find('.num_users, .count').text().trim();
 
-        if (Array.isArray(rooms)) {
-            rooms.forEach((room) => {
-                if (room.username) {
+                if (href && href.includes('/') && !href.includes('javascript')) {
+                    const cleanHref = href.startsWith('http') ? href : `${appConfig.site}${href}`;
+                    const name = title || href.replace(/\//g, '');
                     cards.push({
-                        vod_id: room.username.toString(), // 确保是字符串
-                        vod_name: room.username,
-                        vod_pic: room.image_url || room.snapshot_url,
-                        vod_remarks: `在线: ${room.num_users || 0}人`,
-                        ext: {
-                            url: `${appConfig.site}/${room.username}/`,
-                            name: room.username
-                        }
+                        vod_id: name,
+                        vod_name: name,
+                        vod_pic: cover || "",
+                        vod_remarks: viewers ? `在线: ${viewers}` : "直播中",
+                        ext: { url: cleanHref, name: name }
                     });
                 }
             });
         }
+        
+        // 兜底方案：如果实在解析不出，塞入一个“需要手动激活”的常驻卡片，避免页面空白无法交互
+        if (cards.length === 0) {
+            cards.push({
+                vod_id: "check_network",
+                vod_name: "⚠️ 未刷新出内容，请点击此处测试网络或过几秒重试",
+                vod_pic: "https://pub-static.f002.backblazeb2.com/empty.png",
+                vod_remarks: "点击排查",
+                ext: { url: `${appConfig.site}/`, name: "网络排查" }
+            });
+        }
+
     } catch (e) {
-        $utils.toastError('接口数据抓取失败: ' + e.message);
+        $utils.toastError('网络连接被拒绝，请确认代理状态');
+        cards.push({
+            vod_id: "error",
+            vod_name: "加载失败: " + e.message,
+            vod_pic: "",
+            vod_remarks: "请检查规则",
+            ext: { url: url, name: "重试" }
+        });
     }
 
     return jsonify({ list: cards });
 }
 
-/**
- * 获取播放轨道
- */
 async function getTracks(ext) {
     ext = argsify(ext);
-    const tracks = [
-        {
-            name: "在线播放直播间 (" + ext.name + ")",
-            ext: { url: ext.url }
-        }
-    ];
-    return jsonify({ list: tracks });
+    return jsonify({
+        list: [{ name: "极速嗅探播放: " + ext.name, ext: { url: ext.url } }]
+    });
 }
 
-/**
- * 提取 HLS/m3u8 播放地址
- */
 async function getPlayinfo(ext) {
     ext = argsify(ext);
     const url = ext.url;
-    let playUrl = "";
     
     const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
     const headers = { 'User-Agent': UA };
 
-    try {
-        // 直接请求网页源码，提取动态生成的原始 m3u8
-        const { data } = await $fetch.get(url, { headers });
-        const match = data.match(/https:\\\/\\\/[^"]+?\.m3u8/);
-        if (match) {
-            playUrl = match[0].replace(/\\/g, ''); 
-        }
-    } catch (e) {
-        $print("常规解析失败");
-    }
-
-    // 嗅探器作为兜底分支
     let $config = {};
     try { $config = argsify($config_str); } catch(e){}
 
-    if (!playUrl && $config.sniffer) {
+    // 针对严格限制站，直接使用嗅探器方案或者直接传回原网页让播放器内核进行二级硬嗅探
+    if ($config.sniffer) {
         try {
             const sniffRes = await $fetch.post(`${$config.sniffer}/getplayurl`, jsonify({
                 "url": url,
                 "ua": [UA],
                 "first": 1,
-                "speed": 1
-            }), {
-                'User-Agent': UA,
-                'Content-Type': 'application/json'
-            });
+                "speed": 1,
+                "triggerplay": 1
+            }), { 'User-Agent': UA, 'Content-Type': 'application/json' });
+            
             const resData = argsify(sniffRes.data);
             if (resData && resData.result && resData.result.first) {
                 return jsonify({
                     urls: [resData.result.first.url],
-                    headers: [resData.result.first.headers || { "User-Agent": UA }]
+                    headers: [resData.result.first.headers || headers]
                 });
             }
         } catch (err) {}
     }
 
-    if (playUrl) {
-        return jsonify({ urls: [playUrl], headers: [headers] });
-    } else {
-        return jsonify({ urls: [url], headers: [headers] });
-    }
+    // 终极兜底：直接扔给客户端播放器
+    return jsonify({ urls: [url], headers: [headers] });
 }
 
-/**
- * 搜索逻辑
- */
 async function search(ext) {
     ext = argsify(ext);
-    const keyword = ext.keyword;
-    const searchUrl = `${appConfig.site}/api/public/affiliates/onlinerooms/?limit=40&username=${encodeURIComponent(keyword)}&wm=97bL6`;
-    return await getCards(jsonify({ url: searchUrl }));
+    return await getCards(jsonify({ url: `${appConfig.site}/tags/${encodeURIComponent(ext.keyword)}/` }));
 }
